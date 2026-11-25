@@ -1,0 +1,6 @@
+{
+  "name": "C++ & C Studio",
+  "description": "Веб-компилятор C++ и C с интерактивной консолью, разбором ошибок и поддержкой iPad Magic Keyboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
