@@ -5,9 +5,9 @@ import { ConsolePanel, type ConsolePanelHandle } from './components/ConsolePanel
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { TopBar } from './components/TopBar';
 import { CODE_TEMPLATES, DEFAULT_CODE } from './data/templates';
+import { BrowserCppSession, compileInBrowser } from './runtime/cppEngine';
 import type {
   CodeTemplate,
-  CompileRunResponse,
   CompilerDiagnostic,
   CompilerStandard,
   ConsoleChunk,
@@ -116,8 +116,7 @@ export default function App() {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [exitReason, setExitReason] = useState<string | null>(null);
 
-  const sessionIdRef = useRef<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const sessionRef = useRef<BrowserCppSession | null>(null);
   const chunkCounterRef = useRef(0);
   const formatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<CodeEditorHandle | null>(null);
@@ -190,38 +189,23 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  const closeActiveStream = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+  const stopActiveSession = useCallback(() => {
+    const active = sessionRef.current;
+    sessionRef.current = null;
+    if (active) {
+      active.stop();
     }
   }, []);
 
-  const handleStop = useCallback(async () => {
-    const activeId = sessionIdRef.current;
-    closeActiveStream();
-    sessionIdRef.current = null;
-
-    if (activeId) {
-      try {
-        await fetch(`/api/sessions/${activeId}/stop`, { method: 'POST' });
-      } catch {
-        // Ignore network errors while stopping
-      }
-    }
-
+  const handleStop = useCallback(() => {
+    stopActiveSession();
     setStatus('stopped');
     setExitReason('Остановлено пользователем');
     appendChunk('system', 'Программа остановлена пользователем.');
-  }, [appendChunk, closeActiveStream]);
+  }, [appendChunk, stopActiveSession]);
 
-  const handleRun = useCallback(async () => {
-    if (sessionIdRef.current) {
-      const prevId = sessionIdRef.current;
-      sessionIdRef.current = null;
-      closeActiveStream();
-      void fetch(`/api/sessions/${prevId}/stop`, { method: 'POST' }).catch(() => {});
-    }
+  const handleRun = useCallback(() => {
+    stopActiveSession();
 
     setStatus('compiling');
     setChunks([]);
@@ -236,94 +220,47 @@ export default function App() {
       setActiveTab('console');
     }
 
-    try {
-      const response = await fetch('/api/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          language,
-          standard: currentStandard,
-          code: currentCode,
-        }),
-      });
+    const compiled = compileInBrowser(currentCode, language);
+    setCompileTimeMs(compiled.compileTimeMs);
+    setDiagnostics(compiled.diagnostics);
+    setRawCompilerOutput(compiled.rawCompilerOutput);
 
-      const payload = (await response.json()) as CompileRunResponse;
-      setCompileTimeMs(payload.compileTimeMs ?? null);
-      setDiagnostics(payload.diagnostics ?? []);
-      setRawCompilerOutput(payload.rawCompilerOutput ?? '');
-
-      if (!payload.ok || !payload.sessionId) {
-        if (payload.stage === 'compile') {
-          setStatus('compile_error');
-        } else {
-          setStatus('error');
-          appendChunk('error', payload.error || 'Не удалось скомпилировать программу.');
-        }
-        return;
-      }
-
-      const sid = payload.sessionId;
-      sessionIdRef.current = sid;
-      setStatus('running');
-
-      const es = new EventSource(`/api/sessions/${sid}/stream`);
-      eventSourceRef.current = es;
-
-      es.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as {
-            type: 'stdout' | 'stderr' | 'exit' | 'error';
-            data?: string;
-            code?: number | null;
-            signal?: string | null;
-            durationMs?: number;
-            reason?: string;
-          };
-
-          if (msg.type === 'stdout' && msg.data) {
-            appendChunk('stdout', msg.data);
-          } else if (msg.type === 'stderr' && msg.data) {
-            appendChunk('stderr', msg.data);
-          } else if (msg.type === 'error' && msg.data) {
-            appendChunk('error', msg.data);
-          } else if (msg.type === 'exit') {
-            es.close();
-            if (eventSourceRef.current === es) {
-              eventSourceRef.current = null;
-            }
-            if (sessionIdRef.current === sid) {
-              sessionIdRef.current = null;
-            }
-            setRunDurationMs(msg.durationMs ?? null);
-            setExitCode(msg.code ?? 0);
-            if (msg.reason) {
-              setExitReason(msg.reason);
-              setStatus('stopped');
-              appendChunk('system', `Процесс завершён: ${msg.reason}`);
-            } else {
-              setStatus('completed');
-              const codeNum = msg.code ?? 0;
-              const timeSuffix = msg.durationMs !== undefined ? ` за ${msg.durationMs} мс` : '';
-              appendChunk('system', `Процесс завершён с кодом ${codeNum}${timeSuffix}`);
-            }
-          }
-        } catch {
-          // Ignore malformed event chunks
-        }
-      };
-
-      es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED) return;
-        es.close();
-        if (eventSourceRef.current === es) {
-          eventSourceRef.current = null;
-        }
-      };
-    } catch {
-      setStatus('error');
-      appendChunk('error', 'Ошибка соединения с сервером компилятора.');
+    if (!compiled.ok || !compiled.program) {
+      setStatus('compile_error');
+      return;
     }
-  }, [appendChunk, closeActiveStream, currentCode, currentStandard, effectiveLayout, language]);
+
+    setStatus('running');
+
+    let session: BrowserCppSession | null = null;
+    session = new BrowserCppSession(compiled.program, {
+      onStdout: (data) => {
+        if (sessionRef.current !== session) return;
+        appendChunk('stdout', data);
+      },
+      onStderr: (data) => {
+        if (sessionRef.current !== session) return;
+        appendChunk('stderr', data);
+      },
+      onExit: (msg) => {
+        if (sessionRef.current !== session) return;
+        sessionRef.current = null;
+        setRunDurationMs(msg.durationMs);
+        setExitCode(msg.code ?? 0);
+        if (msg.reason) {
+          setExitReason(msg.reason);
+          setStatus('stopped');
+          appendChunk('system', `Процесс завершён: ${msg.reason}`);
+        } else {
+          setStatus('completed');
+          const codeNum = msg.code ?? 0;
+          const timeSuffix = msg.durationMs !== undefined ? ` за ${msg.durationMs} мс` : '';
+          appendChunk('system', `Процесс завершён с кодом ${codeNum}${timeSuffix}`);
+        }
+      },
+    });
+    sessionRef.current = session;
+  }, [appendChunk, currentCode, effectiveLayout, language, stopActiveSession]);
 
   const handleFormatCode = useCallback(() => {
     setCodes((prev) => {
@@ -351,32 +288,20 @@ export default function App() {
   }, [effectiveLayout]);
 
   const handleSendInput = useCallback(
-    async (line: string) => {
-      const sid = sessionIdRef.current;
-      if (!sid) return;
+    (line: string) => {
+      const active = sessionRef.current;
+      if (!active) return;
       appendChunk('stdin', `${line}\n`);
-      try {
-        await fetch(`/api/sessions/${sid}/stdin`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ input: `${line}\n` }),
-        });
-      } catch {
-        appendChunk('error', '\nНе удалось отправить ввод в процесс.\n');
-      }
+      active.writeStdin(`${line}\n`);
     },
     [appendChunk]
   );
 
-  const handleSendEof = useCallback(async () => {
-    const sid = sessionIdRef.current;
-    if (!sid) return;
+  const handleSendEof = useCallback(() => {
+    const active = sessionRef.current;
+    if (!active) return;
     appendChunk('system', '^D (конец ввода)');
-    try {
-      await fetch(`/api/sessions/${sid}/eof`, { method: 'POST' });
-    } catch {
-      // Ignore
-    }
+    active.sendEof();
   }, [appendChunk]);
 
   const handleClearConsole = useCallback(() => {
@@ -521,13 +446,13 @@ export default function App() {
     status,
   ]);
 
-  // Cleanup SSE and timers on unmount
+  // Cleanup active browser session and timers on unmount
   useEffect(() => {
     return () => {
-      closeActiveStream();
+      stopActiveSession();
       if (formatTimerRef.current) clearTimeout(formatTimerRef.current);
     };
-  }, [closeActiveStream]);
+  }, [stopActiveSession]);
 
   // Pointer drag resizing for both side-by-side and stacked split dividers (Magic Keyboard trackpad + iPad touch/stylus)
   const handleDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -684,7 +609,7 @@ export default function App() {
                 ·
               </span>
               <span className="hidden min-[440px]:inline truncate text-[#5B6576] dark:text-[#8B95A5]">
-                {language === 'cpp' ? 'g++' : 'gcc'} ({currentStandard})
+                {language === 'cpp' ? 'C++' : 'C'} ({currentStandard})
               </span>
               {diagSummary.errors > 0 && (
                 <>

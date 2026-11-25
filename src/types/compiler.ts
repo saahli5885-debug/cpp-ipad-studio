@@ -43,13 +43,3 @@ export interface CodeTemplate {
   description: string;
   code: string;
 }
-
-export interface CompileRunResponse {
-  ok: boolean;
-  sessionId?: string;
-  stage?: 'compile' | 'validation' | 'server';
-  diagnostics: CompilerDiagnostic[];
-  rawCompilerOutput: string;
-  compileTimeMs: number;
-  error?: string;
-}
