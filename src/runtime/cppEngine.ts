@@ -2,6 +2,7 @@ import type { CompilerDiagnostic, Language } from '../types/compiler';
 import { CompileError, tokenizeCpp } from './lexer';
 import { parseCpp, type ProgramNode } from './parser';
 import { InteractiveStdin, runProgram, RuntimeAbortError } from './interpreter';
+import { StreamAbortError } from './streams';
 
 export interface BrowserCompileResult {
   ok: boolean;
@@ -14,6 +15,7 @@ export interface BrowserCompileResult {
 export interface BrowserSessionCallbacks {
   onStdout: (text: string) => void;
   onStderr: (text: string) => void;
+  onWaitingForInput?: () => void;
   onExit: (result: { code: number | null; durationMs: number; reason?: string }) => void;
 }
 
@@ -105,12 +107,16 @@ export function compileInBrowser(code: string, language: Language): BrowserCompi
 }
 
 export class BrowserCppSession {
-  private readonly stdin = new InteractiveStdin();
+  private readonly stdin: InteractiveStdin;
   private readonly controller = new AbortController();
   private finished = false;
 
   constructor(program: ProgramNode, callbacks: BrowserSessionCallbacks) {
     const startedAt = performance.now();
+    this.stdin = new InteractiveStdin({
+      interactive: true,
+      onBeforeWait: callbacks.onWaitingForInput,
+    });
 
     void runProgram(program, {
       onStdout: callbacks.onStdout,
@@ -130,7 +136,7 @@ export class BrowserCppSession {
         if (this.finished) return;
         this.finished = true;
         const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
-        if (err instanceof RuntimeAbortError) {
+        if (err instanceof RuntimeAbortError || err instanceof StreamAbortError) {
           callbacks.onExit({
             code: null,
             durationMs,

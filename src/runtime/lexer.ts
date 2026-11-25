@@ -54,13 +54,15 @@ export class CompileError extends Error {
 export const CPP_KEYWORDS = new Set([
   'auto', 'bool', 'break', 'case', 'catch', 'char', 'class', 'const',
   'constexpr', 'continue', 'default', 'delete', 'do', 'double', 'else',
-  'enum', 'extern', 'false', 'float', 'for', 'goto', 'if', 'inline',
-  'int', 'long', 'namespace', 'new', 'nullptr', 'NULL', 'operator',
-  'private', 'protected', 'public', 'register', 'return', 'short',
-  'signed', 'sizeof', 'static', 'struct', 'switch', 'template', 'this',
-  'throw', 'true', 'try', 'typedef', 'typename', 'union', 'unsigned',
-  'using', 'virtual', 'void', 'volatile', 'while', 'size_t', 'ssize_t',
-  'int64_t', 'uint64_t', 'int32_t', 'uint32_t',
+  'enum', 'explicit', 'extern', 'false', 'final', 'float', 'for', 'friend',
+  'goto', 'if', 'inline', 'int', 'long', 'mutable', 'namespace', 'new',
+  'noexcept', 'nullptr', 'NULL', 'operator', 'override', 'private',
+  'protected', 'public', 'register', 'return', 'short', 'signed', 'sizeof',
+  'static', 'struct', 'switch', 'template', 'this', 'throw', 'true', 'try',
+  'typedef', 'typename', 'union', 'unsigned', 'using', 'virtual', 'void',
+  'volatile', 'while', 'size_t', 'ssize_t', 'ptrdiff_t', 'streamsize',
+  'int8_t', 'uint8_t', 'int16_t', 'uint16_t', 'int32_t', 'uint32_t',
+  'int64_t', 'uint64_t',
 ]);
 
 const MULTI_OPS = [
@@ -78,6 +80,10 @@ function unescapeChar(ch: string): string {
     case 'n': return '\n';
     case 't': return '\t';
     case 'r': return '\r';
+    case 'v': return '\v';
+    case 'f': return '\f';
+    case 'a': return '\x07';
+    case 'b': return '\b';
     case '0': return '\0';
     case '\\': return '\\';
     case '"': return '"';
@@ -93,7 +99,7 @@ export interface LexResult {
   sourceLines: string[];
 }
 
-export function tokenizeCpp(source: string, fileName: string): LexResult {
+export function tokenizeCpp(source: string, fileName: string, macroDepth = 0): LexResult {
   const normalized = source.replace(/\r\n/g, '\n');
   const sourceLines = normalized.split('\n');
   const tokens: Token[] = [];
@@ -282,9 +288,11 @@ export function tokenizeCpp(source: string, fileName: string): LexResult {
       while (i < len && /[A-Za-z0-9_]/.test(normalized[i])) ident += advance();
 
       // Expand simple object-like #define macros
-      if (defines.has(ident)) {
+      if (macroDepth < 8 && defines.has(ident)) {
         const expansion = defines.get(ident)!;
-        const expanded = tokenizeCpp(expansion, fileName).tokens.filter((t) => t.type !== 'eof');
+        const expanded = tokenizeCpp(expansion, fileName, macroDepth + 1).tokens.filter(
+          (t) => t.type !== 'eof'
+        );
         for (const t of expanded) {
           tokens.push({ ...t, line: startLine, column: startCol });
         }

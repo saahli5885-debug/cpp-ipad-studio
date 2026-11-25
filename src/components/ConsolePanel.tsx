@@ -27,6 +27,7 @@ export interface ConsolePanelHandle {
 }
 
 interface ConsolePanelProps {
+  runId: number;
   status: RunStatus;
   chunks: ConsoleChunk[];
   diagnostics: CompilerDiagnostic[];
@@ -45,6 +46,7 @@ interface ConsolePanelProps {
 
 export const ConsolePanel = forwardRef<ConsolePanelHandle, ConsolePanelProps>(function ConsolePanel(
   {
+    runId,
     status,
     chunks,
     diagnostics,
@@ -86,6 +88,11 @@ export const ConsolePanel = forwardRef<ConsolePanelHandle, ConsolePanelProps>(fu
     }
   }, [chunks, status, inputValue]);
 
+  // Reset draft input atomically on every new Run
+  useEffect(() => {
+    setInputValue('');
+  }, [runId]);
+
   // Automatically focus inline console input when program starts running
   useEffect(() => {
     if (status === 'running') {
@@ -94,7 +101,7 @@ export const ConsolePanel = forwardRef<ConsolePanelHandle, ConsolePanelProps>(fu
       }, 30);
       return () => clearTimeout(timer);
     }
-  }, [status]);
+  }, [status, runId]);
 
   const handleSubmitLine = () => {
     if (status !== 'running') return;
@@ -103,7 +110,8 @@ export const ConsolePanel = forwardRef<ConsolePanelHandle, ConsolePanelProps>(fu
   };
 
   const handleInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+    // Let Cmd+Enter / Ctrl+Enter bubble up to global Run shortcut on Magic Keyboard
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       handleSubmitLine();
       return;

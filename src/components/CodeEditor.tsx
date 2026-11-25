@@ -26,6 +26,7 @@ import type { CompilerDiagnostic } from '../types/compiler';
 
 export interface CodeEditorHandle {
   focus: () => void;
+  getValue: () => string;
   jumpToLine: (line: number, column?: number | null) => void;
 }
 
@@ -184,6 +185,9 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
     focus() {
       viewRef.current?.focus();
     },
+    getValue() {
+      return viewRef.current?.state.doc.toString() ?? '';
+    },
     jumpToLine(lineNumber: number, column?: number | null) {
       const view = viewRef.current;
       if (!view) return;
@@ -228,6 +232,8 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
           autocorrect: 'off',
           autocapitalize: 'off',
           autocomplete: 'off',
+          'data-gramm': 'false',
+          translate: 'no',
         }),
         themeCompartment.of([
           createEditorTheme(theme, fontSize),

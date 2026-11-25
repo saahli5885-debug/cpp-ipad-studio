@@ -107,6 +107,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
 
   // Compiler & execution session state
+  const [runId, setRunId] = useState(0);
   const [status, setStatus] = useState<RunStatus>('idle');
   const [chunks, setChunks] = useState<ConsoleChunk[]>([]);
   const [diagnostics, setDiagnostics] = useState<CompilerDiagnostic[]>([]);
@@ -116,6 +117,8 @@ export default function App() {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [exitReason, setExitReason] = useState<string | null>(null);
 
+  const codesRef = useRef(codes);
+  codesRef.current = codes;
   const sessionRef = useRef<BrowserCppSession | null>(null);
   const chunkCounterRef = useRef(0);
   const formatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,6 +140,11 @@ export default function App() {
   const currentCode = codes[language];
   const currentStandard = standards[language];
   const diagSummary = useMemo(() => summarizeDiagnostics(diagnostics), [diagnostics]);
+
+  const getLiveCode = useCallback((): string => {
+    const editorText = editorRef.current?.getValue();
+    return editorText !== undefined ? editorText : codesRef.current[language];
+  }, [language]);
 
   const appendChunk = useCallback((kind: ConsoleChunk['kind'], text: string) => {
     chunkCounterRef.current += 1;
@@ -207,6 +215,15 @@ export default function App() {
   const handleRun = useCallback(() => {
     stopActiveSession();
 
+    // Synchronously read live editor buffer to eliminate stale-closure races on Cmd+Enter / Run
+    const liveCode = getLiveCode();
+    if (codesRef.current[language] !== liveCode) {
+      codesRef.current = { ...codesRef.current, [language]: liveCode };
+      setCodes((prev) => ({ ...prev, [language]: liveCode }));
+      writeStorage(language === 'cpp' ? STORAGE_KEYS.codeCpp : STORAGE_KEYS.codeC, liveCode);
+    }
+
+    setRunId((id) => id + 1);
     setStatus('compiling');
     setChunks([]);
     setDiagnostics([]);
@@ -220,7 +237,7 @@ export default function App() {
       setActiveTab('console');
     }
 
-    const compiled = compileInBrowser(currentCode, language);
+    const compiled = compileInBrowser(liveCode, language);
     setCompileTimeMs(compiled.compileTimeMs);
     setDiagnostics(compiled.diagnostics);
     setRawCompilerOutput(compiled.rawCompilerOutput);
@@ -242,6 +259,12 @@ export default function App() {
         if (sessionRef.current !== session) return;
         appendChunk('stderr', data);
       },
+      onWaitingForInput: () => {
+        if (sessionRef.current !== session) return;
+        setTimeout(() => {
+          consoleRef.current?.focusInput();
+        }, 0);
+      },
       onExit: (msg) => {
         if (sessionRef.current !== session) return;
         sessionRef.current = null;
@@ -260,20 +283,21 @@ export default function App() {
       },
     });
     sessionRef.current = session;
-  }, [appendChunk, currentCode, effectiveLayout, language, stopActiveSession]);
+  }, [appendChunk, effectiveLayout, getLiveCode, language, stopActiveSession]);
 
   const handleFormatCode = useCallback(() => {
-    setCodes((prev) => {
-      const formatted = formatCppCode(prev[language]);
-      if (formatted === prev[language]) return prev;
-      return { ...prev, [language]: formatted };
-    });
+    const liveCode = getLiveCode();
+    const formatted = formatCppCode(liveCode);
+    if (formatted !== codesRef.current[language]) {
+      codesRef.current = { ...codesRef.current, [language]: formatted };
+      setCodes((prev) => ({ ...prev, [language]: formatted }));
+    }
     setFormattedFeedback(true);
     if (formatTimerRef.current) clearTimeout(formatTimerRef.current);
     formatTimerRef.current = setTimeout(() => {
       setFormattedFeedback(false);
     }, 1500);
-  }, [language]);
+  }, [getLiveCode, language]);
 
   const handleToggleWordWrap = useCallback(() => {
     setWordWrapPreference(effectiveWordWrap ? 'off' : 'on');
@@ -330,7 +354,8 @@ export default function App() {
 
   const handleDownloadCode = useCallback(() => {
     const filename = language === 'cpp' ? 'main.cpp' : 'main.c';
-    const blob = new Blob([currentCode], { type: 'text/plain;charset=utf-8' });
+    const liveCode = getLiveCode();
+    const blob = new Blob([liveCode], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -339,7 +364,7 @@ export default function App() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [currentCode, language]);
+  }, [getLiveCode, language]);
 
   const handleImportCode = useCallback(
     (content: string, detectedLang?: Language) => {
@@ -667,7 +692,10 @@ export default function App() {
             <CodeEditor
               ref={editorRef}
               value={currentCode}
-              onChange={(next) => setCodes((prev) => ({ ...prev, [language]: next }))}
+              onChange={(next) => {
+                codesRef.current = { ...codesRef.current, [language]: next };
+                setCodes((prev) => ({ ...prev, [language]: next }));
+              }}
               theme={theme}
               fontSize={fontSize}
               lineWrapping={effectiveWordWrap}
@@ -730,6 +758,7 @@ export default function App() {
         >
           <ConsolePanel
             ref={consoleRef}
+            runId={runId}
             status={status}
             chunks={chunks}
             diagnostics={diagnostics}
